@@ -183,11 +183,6 @@ impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
         let mul_degree = arithmetization.evals_on_mul_K.row.evaluations.len();
         let mul_domain = EvaluationDomain::new(mul_degree).expect("Degree is too high in EvaluationDomain");
         let b_poly_evals = EvaluationsOnDomain::from_vec_and_domain(b_poly_evals, mul_domain);
-        println!(
-            "b size of group {}; non zero domain: {}",
-            b_poly_evals.domain().log_size_of_group,
-            mul_domain.log_size_of_group
-        );
 
         let f_evals_time = start_timer!(|| "Computing f evals on K");
         let mut inverses: Vec<_> = cfg_iter!(row_on_K.evaluations)
