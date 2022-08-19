@@ -128,6 +128,9 @@ pub struct MatrixArithmetization<F: PrimeField> {
 
     /// Evaluation of `self.row_a`, `self.col_a`, and `self.val_a` on the domain `K`.
     pub evals_on_K: MatrixEvals<F>,
+    /// Evaluation of `self.row`, `self.col`, and `self.row_col` on the domain
+    /// large enough to multiply two polynomials on `K`.
+    pub evals_on_mul_K: MatrixEvals<F>,
 }
 
 pub(crate) fn precomputation_for_matrix_evals<F: PrimeField>(
@@ -211,6 +214,11 @@ pub(crate) fn arithmetize_matrix<F: PrimeField>(label: &str, matrix_evals: Matri
     let row_col = matrix_evals.row_col.clone().interpolate();
     end_timer!(interpolate_time);
 
+    let mul_degree = 2 * matrix_evals.row.evaluations.len();
+    let mul_domain = EvaluationDomain::new(mul_degree).expect("Degree is too high in EvaluationDomain");
+    let row_evals = EvaluationsOnDomain::from_vec_and_domain(mul_domain.fft(&row), mul_domain);
+    let col_evals = EvaluationsOnDomain::from_vec_and_domain(mul_domain.fft(&col), mul_domain);
+    let row_col_evals = EvaluationsOnDomain::from_vec_and_domain(mul_domain.fft(&row_col), mul_domain);
     end_timer!(matrix_time);
 
     MatrixArithmetization {
@@ -218,6 +226,12 @@ pub(crate) fn arithmetize_matrix<F: PrimeField>(label: &str, matrix_evals: Matri
         col: LabeledPolynomial::new("col_".to_string() + label, col, None, None),
         val: LabeledPolynomial::new("val_".to_string() + label, val, None, None),
         row_col: LabeledPolynomial::new("row_col_".to_string() + label, row_col, None, None),
+        evals_on_mul_K: MatrixEvals {
+            row: row_evals,
+            col: col_evals,
+            val: matrix_evals.val.clone(),
+            row_col: row_col_evals,
+        },
         evals_on_K: matrix_evals,
     }
 }

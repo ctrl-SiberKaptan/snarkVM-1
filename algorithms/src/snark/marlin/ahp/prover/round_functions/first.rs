@@ -34,12 +34,8 @@ use crate::{
 };
 use itertools::Itertools;
 use snarkvm_fields::PrimeField;
-use snarkvm_utilities::cfg_into_iter;
 
 use rand_core::RngCore;
-
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 
 impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
     /// Output the number of oracles sent by the prover in the first round.
@@ -82,10 +78,18 @@ impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
 
         let mut job_pool = snarkvm_utilities::ExecutionPool::with_capacity(3 * batch_size);
         let state_ref = &state;
-        for (i, (z_a, z_b, private_variables, x_poly)) in
-            itertools::izip!(z_a, z_b, private_variables, &state.x_poly).enumerate()
+        for (i, (z_a, z_b, private_variables, public_variables, x_poly)) in
+            itertools::izip!(z_a, z_b, private_variables, &state.padded_public_variables, &state.x_poly).enumerate()
         {
-            job_pool.add_job(move || Self::calculate_w(witness_label("w", i), private_variables, x_poly, state_ref));
+            job_pool.add_job(move || {
+                Self::calculate_w(
+                    witness_label("w", i),
+                    private_variables,
+                    public_variables.to_vec(),
+                    x_poly,
+                    state_ref,
+                )
+            });
             job_pool.add_job(move || Self::calculate_z_m(witness_label("z_a", i), z_a, false, state_ref, None));
             let r_b = F::rand(rng);
             job_pool.add_job(move || Self::calculate_z_m(witness_label("z_b", i), z_b, true, state_ref, Some(r_b)));
@@ -153,37 +157,36 @@ impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
     fn calculate_w<'a>(
         label: String,
         private_variables: Vec<F>,
+        public_variables: Vec<F>,
         x_poly: &DensePolynomial<F>,
         state: &prover::State<'a, F, MM>,
     ) -> PoolResult<'a, F> {
         let constraint_domain = state.constraint_domain;
         let input_domain = state.input_domain;
 
-        let mut w_extended = private_variables;
+        let mut w_extended_evals = vec![F::zero(); constraint_domain.size()];
+
         let ratio = constraint_domain.size() / input_domain.size();
-        w_extended.resize(constraint_domain.size() - input_domain.size(), F::zero());
 
-        let x_evals = {
-            let mut coeffs = x_poly.coeffs.clone();
-            coeffs.resize(constraint_domain.size(), F::zero());
-            constraint_domain.in_order_fft_in_place_with_pc(&mut coeffs, state.fft_precomputation());
-            coeffs
-        };
+        for k in 0..private_variables.len() {
+            w_extended_evals[k + (k / (ratio - 1)) + 1] = private_variables[k];
+        }
+        for k in 0..public_variables.len() {
+            w_extended_evals[k * ratio] = public_variables[k];
+        }
 
-        let w_poly_time = start_timer!(|| "Computing w polynomial");
-        let w_poly_evals = cfg_into_iter!(0..constraint_domain.size())
-            .map(|k| match k % ratio {
-                0 => F::zero(),
-                _ => w_extended[k - (k / ratio) - 1] - x_evals[k],
-            })
-            .collect();
-        let w_poly = EvaluationsOnDomain::from_vec_and_domain(w_poly_evals, constraint_domain)
+        let mut w_poly = EvaluationsOnDomain::from_vec_and_domain(w_extended_evals, constraint_domain)
             .interpolate_with_pc(state.ifft_precomputation());
+
+        // zip safety: w_extended is longer than x
+        for (coeff, x_coeff) in w_poly.coeffs.iter_mut().zip(&x_poly.coeffs) {
+            *coeff -= x_coeff;
+        }
+
         let (w_poly, remainder) = w_poly.divide_by_vanishing_poly(input_domain).unwrap();
         assert!(remainder.is_zero());
 
         assert!(w_poly.degree() < constraint_domain.size() - input_domain.size());
-        end_timer!(w_poly_time);
         PoolResult::Witness(LabeledPolynomial::new(label, w_poly, None, Self::zk_bound()))
     }
 

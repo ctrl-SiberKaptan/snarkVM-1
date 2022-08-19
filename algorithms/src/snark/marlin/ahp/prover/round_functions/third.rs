@@ -158,35 +158,36 @@ impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
         let mut job_pool = snarkvm_utilities::ExecutionPool::with_capacity(2);
         job_pool.add_job(|| {
             let a_poly_time = start_timer!(|| "Computing a poly");
-            let a_poly = {
-                let coeffs = cfg_iter!(arithmetization.val.as_dense().unwrap().coeffs())
-                    .map(|a| v_H_alpha_v_H_beta * a)
-                    .collect();
-                DensePolynomial::from_coefficients_vec(coeffs)
-            };
+            let coeffs =
+                cfg_iter!(arithmetization.val.as_dense().unwrap().coeffs()).map(|a| v_H_alpha_v_H_beta * a).collect();
             end_timer!(a_poly_time);
-            a_poly
+            coeffs
         });
 
-        let (row_on_K, col_on_K, row_col_on_K) =
-            (&arithmetization.evals_on_K.row, &arithmetization.evals_on_K.col, &arithmetization.evals_on_K.row_col);
+        let (row_on_K, col_on_K) = (&arithmetization.evals_on_K.row, &arithmetization.evals_on_K.col);
 
         job_pool.add_job(|| {
             let b_poly_time = start_timer!(|| "Computing b poly");
             let alpha_beta = alpha * beta;
-            let b_poly = {
-                let evals: Vec<F> = cfg_iter!(row_on_K.evaluations)
-                    .zip_eq(&col_on_K.evaluations)
-                    .zip_eq(&row_col_on_K.evaluations)
-                    .map(|((r, c), r_c)| alpha_beta - alpha * r - beta * c + r_c)
-                    .collect();
-                EvaluationsOnDomain::from_vec_and_domain(evals, non_zero_domain)
-                    .interpolate_with_pc(ifft_precomputation)
-            };
+            let b_poly_evals = cfg_iter!(arithmetization.evals_on_mul_K.row.evaluations)
+                .zip_eq(&arithmetization.evals_on_mul_K.col.evaluations)
+                .zip_eq(&arithmetization.evals_on_mul_K.row_col.evaluations)
+                .map(|((r, c), r_c)| alpha_beta - alpha * r - beta * c + r_c)
+                .collect();
             end_timer!(b_poly_time);
-            b_poly
+            b_poly_evals
         });
-        let [a_poly, b_poly]: [_; 2] = job_pool.execute_all().try_into().unwrap();
+
+        let [a_poly, b_poly_evals]: [_; 2] = job_pool.execute_all().try_into().unwrap();
+        let a_poly = DensePolynomial::from_coefficients_vec(a_poly);
+        let mul_degree = arithmetization.evals_on_mul_K.row.evaluations.len();
+        let mul_domain = EvaluationDomain::new(mul_degree).expect("Degree is too high in EvaluationDomain");
+        let b_poly_evals = EvaluationsOnDomain::from_vec_and_domain(b_poly_evals, mul_domain);
+        println!(
+            "b size of group {}; non zero domain: {}",
+            b_poly_evals.domain().log_size_of_group,
+            mul_domain.log_size_of_group
+        );
 
         let f_evals_time = start_timer!(|| "Computing f evals on K");
         let mut inverses: Vec<_> = cfg_iter!(row_on_K.evaluations)
@@ -207,7 +208,7 @@ impl<F: PrimeField, MM: MarlinMode> AHPForR1CS<F, MM> {
         let h = &a_poly
             - &{
                 let mut multiplier = PolyMultiplier::new();
-                multiplier.add_polynomial_ref(&b_poly, "b");
+                multiplier.add_evaluation_ref(&b_poly_evals, "b");
                 multiplier.add_polynomial_ref(&f, "f");
                 multiplier.add_precomputation(fft_precomputation, ifft_precomputation);
                 multiplier.multiply().unwrap()

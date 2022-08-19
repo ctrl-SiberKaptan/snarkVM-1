@@ -71,8 +71,12 @@ impl<'a, F: PrimeField> PolyMultiplier<'a, F> {
         if self.polynomials.is_empty() && self.evaluations.is_empty() {
             Some(DensePolynomial::zero())
         } else {
-            let degree = self.polynomials.iter().map(|(_, p)| p.degree() + 1).sum::<usize>();
-            let domain = EvaluationDomain::new(degree)?;
+            let domain = if self.evaluations.is_empty() {
+                let degree = self.polynomials.iter().map(|(_, p)| p.degree() + 1).sum::<usize>();
+                EvaluationDomain::new(degree)?
+            } else {
+                self.evaluations.first().unwrap().1.domain()
+            };
             if self.evaluations.iter().any(|(_, e)| e.domain() != domain) {
                 None
             } else {
